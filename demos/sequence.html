@@ -249,6 +249,28 @@
       Alice<<->>Bob: Wow, we said that at the same time!
       Bob<<-->>Alice: Bidirectional Arrows are so cool
     </pre>
+    <hr />
+
+    <pre class="mermaid">
+    sequenceDiagram
+      classDef warning fill:#f96,stroke:#333,stroke-width:4px
+      classDef calm fill:#bbf,stroke:#33a,color:#003
+
+      participant A:::warning as Alice
+      actor B:::calm as Bob
+      participant C as Carol
+      participant D as Dave
+      participant E as Erin
+
+      class C,D calm
+      style E fill:#9f6,stroke:#363
+
+      A->>B: Hello Bob!
+      B->>C: Pass it on
+      C->>D: And on
+      D->>E: Done
+      E-->>A: Thanks
+    </pre>
     <script type="module">
       import mermaid from './mermaid.esm.mjs';
       mermaid.initialize({

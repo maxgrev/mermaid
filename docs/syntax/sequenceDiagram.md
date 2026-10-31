@@ -502,6 +502,127 @@ end
     B->>C: Hello Charley, how are you?
 ```
 
+### Styling participants (v\<MERMAID_RELEASE_VERSION>+)
+
+Participants and actors can be styled one by one with the same `classDef`, `class`, `style` and `:::` syntax that flowcharts use, so the same definitions work in both diagram types. The styles apply to the participant's box at the top and at the bottom of the diagram, and to the actor figure.
+
+#### Defining a class with `classDef`
+
+`classDef` defines a named set of styles. List several names, separated by commas, to give them the same styles.
+
+```
+classDef className fill:#f9f,stroke:#333,stroke-width:4px
+classDef firstClassName,secondClassName stroke:#333
+```
+
+#### Assigning a class with `class`
+
+`class` assigns a class to one or more participants. Separate the participant ids with commas. A participant can have several classes, and a class can be assigned before or after the participant is declared.
+
+```
+class participantId className
+class firstId,secondId className
+```
+
+#### Assigning a class with `:::`
+
+A shorter form is to add the class name to a `participant` or `actor` declaration with the `:::` operator. It can be combined with an alias.
+
+```
+participant A:::className
+actor B:::className as Bob
+```
+
+#### Styling a single participant with `style`
+
+`style` applies styles directly to one or more participants. Separate the participant ids with commas.
+
+```
+style participantId fill:#f9f,stroke:#333,stroke-width:4px
+style firstId,secondId fill:#f9f
+```
+
+The following example shows all four forms:
+
+```mermaid
+sequenceDiagram
+    classDef warning fill:#f96,stroke:#333,stroke-width:4px
+    classDef calm fill:#bbf,stroke:#33a,color:#003
+
+    participant A:::warning as Alice
+    actor B:::calm as Bob
+    participant C as Carol
+    participant D as Dave
+    participant E as Erin
+
+    class C,D calm
+    style E fill:#9f6,stroke:#363
+
+    A->>B: Hello Bob!
+    B->>C: Pass it on
+    C->>D: And on
+    D->>E: Done
+    E-->>A: Thanks
+```
+
+```mermaid-example
+sequenceDiagram
+    classDef warning fill:#f96,stroke:#333,stroke-width:4px
+    classDef calm fill:#bbf,stroke:#33a,color:#003
+
+    participant A:::warning as Alice
+    actor B:::calm as Bob
+    participant C as Carol
+    participant D as Dave
+    participant E as Erin
+
+    class C,D calm
+    style E fill:#9f6,stroke:#363
+
+    A->>B: Hello Bob!
+    B->>C: Pass it on
+    C->>D: And on
+    D->>E: Done
+    E-->>A: Thanks
+```
+
+A participant can have several classes, for example one from `:::` and others from `class`, and can have both classes and an inline `style`. The declarations are applied in the order they were written: the classes in the order they were assigned, then the inline `style`. A later declaration overrides an earlier one, so an inline `style` always overrides the styles of the participant's classes.
+
+```mermaid
+sequenceDiagram
+    classDef base fill:#eef,stroke:#336
+    classDef alert fill:#f66,stroke:#900
+
+    participant A:::base as Alice
+    participant B:::base as Bob
+
+    class A alert
+    style B fill:#ffd,stroke-width:4px
+
+    A->>B: The alert class wins over base for Alice
+    B->>A: The inline style wins over base for Bob
+```
+
+```mermaid-example
+sequenceDiagram
+    classDef base fill:#eef,stroke:#336
+    classDef alert fill:#f66,stroke:#900
+
+    participant A:::base as Alice
+    participant B:::base as Bob
+
+    class A alert
+    style B fill:#ffd,stroke-width:4px
+
+    A->>B: The alert class wins over base for Alice
+    B->>A: The inline style wins over base for Bob
+```
+
+> **Note**
+> As in flowcharts, `color` sets the colour of the participant's label, and the other properties, such as `fill`, `stroke` and `stroke-width`, style the participant's box or figure.
+
+Each class assigned to a participant is also added as a CSS class on the rendered participant, so it can be targeted from the theme's CSS as well. Participants without any class or style are drawn exactly as before.
+
 ## Messages
 
 Messages can be of two displayed either solid or with a dotted line.

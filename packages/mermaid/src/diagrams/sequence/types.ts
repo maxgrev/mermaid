@@ -17,6 +17,17 @@ export interface Actor {
   actorCnt: number | null;
   rectData: unknown;
   type: string;
+  /** Classes assigned with `class` or the `:::` shorthand, in the order they were assigned. */
+  classes: string[];
+  /** Inline styles assigned with `style`, in the order they were assigned. */
+  styles: string[];
+}
+
+/** A style class defined with `classDef`, shaped like the flowchart `FlowClass`. */
+export interface SequenceClass {
+  id: string;
+  styles: string[];
+  textStyles: string[];
 }
 
 export interface Message {

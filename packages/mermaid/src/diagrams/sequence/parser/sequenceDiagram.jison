@@ -15,6 +15,8 @@
 // Special states for recognizing aliases
 // A special state for grabbing text up to the first comment/newline
 %x ID ALIAS LINE CONFIG CONFIG_DATA
+// Special states for the styling statements (classDef, class, style) and the ::: shorthand
+%x STYLE_IDS STYLE_BODY CLASS_IDS CLASS_NAME CLASSNAME
 
 %x acc_title
 %x acc_descr
@@ -24,20 +26,37 @@
 [\n]+                                                           return 'NEWLINE';
 \s+                                                             /* skip all whitespace */
 <ID,ALIAS,LINE>((?!\n)\s)+                                      /* skip same-line whitespace */
-<INITIAL,ID,ALIAS,LINE>\#[^\n]*   															/* skip comments */
+<INITIAL,ID,ALIAS,LINE>\#[^\n]*   																																			/* skip comments */
 \%%(?!\{)[^\n]*                                                 /* skip comments */
 [^\}]\%\%[^\n]*                                                 /* skip comments */
 ([0-9]+(\.[0-9]{1,2})?|\.[0-9]{1,2})(?=[ \n]+)    				return 'NUM';
 <ID>\@\{                                                        { this.begin('CONFIG'); return 'CONFIG_START'; }
 <CONFIG>[^\}]+                                                  { return 'CONFIG_CONTENT'; }
 <CONFIG>\}(?=\s+as\s)                                           { this.popState(); this.begin('ALIAS'); return 'CONFIG_END'; }
+<CONFIG>\}(?=\s*[:]{3})                                            { this.popState(); return 'CONFIG_END'; }
 <CONFIG>\}                                                      { this.popState(); this.popState(); return 'CONFIG_END'; }
+<ID>(?:(?!\sas\s)[^<>:\n,;@])+(?=[:]{3})                          { yytext = yytext.trim(); return 'ACTOR'; }
+<ID>":::"                                                       { this.begin('CLASSNAME'); return 'STYLE_SEPARATOR'; }
+<CLASSNAME>((?!\n)\s)+                                          /* skip same-line whitespace */
+<CLASSNAME>[^\s<>:\n,;@#]+(?=[ \t]+as\s)                       { this.popState(); this.begin('ALIAS'); return 'CLASSNAME'; }
+<CLASSNAME>[^\s<>:\n,;@#]+                                      { this.popState(); this.popState(); return 'CLASSNAME'; }
 <ID>[^<>:\n,;@\s]+(?=\s*\@\{)                                   { yytext = yytext.trim(); return 'ACTOR'; }
 <ID>[^<>:\n,;@\s]+(?=\s+as\s)                                   { yytext = yytext.trim(); this.begin('ALIAS'); return 'ACTOR'; }
 <ID>[^<>:\n,;@]+(?=\s*[\n;#]|$)                                 { yytext = yytext.trim(); this.popState(); return 'ACTOR'; }
 <ID>[^<>:\n,;@]*\<[^\n]*                                        { this.popState(); return 'INVALID'; }
 <ID>[^\n]+                                                      { yytext = yytext.trim(); this.popState(); return 'INVALID'; }
-"box"															{ this.begin('LINE'); return 'box'; }
+// Note: write a colon in front of a closing parenthesis as [:], JISON drops a bare `:` there.
+// Styling statements. The lookaheads require the full shape of the statement so that a participant
+// that merely starts with one of these words (e.g. `class A->>B: hi`) is still lexed as an actor.
+"classDef"(?=[ \t]+[^\s;:<>]+[ \t]+[a-zA-Z][\w\-]*[ \t]*[:])     { this.begin('STYLE_IDS'); return 'CLASSDEF'; }
+"style"(?=[ \t]+[^\s;:<>]+[ \t]+[a-zA-Z][\w\-]*[ \t]*[:])        { this.begin('STYLE_IDS'); return 'STYLE'; }
+"class"(?=[ \t]+[^\s;:<>]+[ \t]+[^\s;:<>#]+[ \t]*(?:[\n;#]|\%\%|$))  { this.begin('CLASS_IDS'); return 'CLASS'; }
+<STYLE_IDS,CLASS_IDS,CLASS_NAME,STYLE_BODY>[ \t]+                /* skip same-line whitespace */
+<STYLE_IDS>[^\s;]+                                              { this.popState(); this.begin('STYLE_BODY'); return 'STYLE_IDS'; }
+<STYLE_BODY>(?:(?!\%\%)[^\n;])+                                   { this.popState(); yytext = yytext.trim(); return 'STYLE_BODY'; }
+<CLASS_IDS>[^\s;]+                                              { this.popState(); this.begin('CLASS_NAME'); return 'STYLE_IDS'; }
+<CLASS_NAME>[^\s;#]+                                            { this.popState(); return 'CLASSNAME'; }
+"box"																															{ this.begin('LINE'); return 'box'; }
 "participant"                                                   { this.begin('ID'); return 'participant'; }
 "actor"                                                   		{ this.begin('ID'); return 'participant_actor'; }
 "create"                                                        return 'create';
@@ -50,7 +69,7 @@
 "alt"                                                           { this.begin('LINE'); return 'alt'; }
 "else"                                                          { this.begin('LINE'); return 'else'; }
 "par"                                                           { this.begin('LINE'); return 'par'; }
-"par_over" 														{ this.begin('LINE'); return 'par_over'; }
+"par_over" 															{ this.begin('LINE'); return 'par_over'; }
 "and"                                                           { this.begin('LINE'); return 'and'; }
 "critical"                                                      { this.begin('LINE'); return 'critical'; }
 "option"                                                        { this.begin('LINE'); return 'option'; }
@@ -78,7 +97,7 @@ accDescr\s*"{"\s*                                { this.begin("acc_descr_multili
 <acc_descr_multiline>[^\}]*                     return "acc_descr_multiline_value";
 "sequenceDiagram"                                               return 'SD';
 "autonumber"                                                    return 'autonumber';
-"off"															return 'off';
+"off"																	return 'off';
 ","                                                             return ',';
 ";"                                                             return 'NEWLINE';
 [^\/\\\+\()\+<\->\->:\n,;]+((?!(\-x|\-\-x|\-\)|\-\-\)|\-\|\\|\-\\|\-\/|\-\/\/|\-\|\/|\/\|\-|\\\|\-|\/\/\-|\\\\\-|\/\|\-|\-\-\|\\|\-\-|\(\)))[\-]*[^\+<\->\->:\n,;]+)*             { yytext = yytext.trim(); return 'ACTOR'; } //final_4.11
@@ -172,6 +191,9 @@ statement
 		$3.push({type: 'boxEnd', boxText:$2});
 		$$=$3;}
 	| signal 'NEWLINE'
+	| 'CLASSDEF' STYLE_IDS STYLE_BODY 'NEWLINE' {$$={type: 'addClass', ids: $2, styles: $3};}
+	| 'CLASS' STYLE_IDS CLASSNAME 'NEWLINE' {$$={type: 'setClass', ids: $2, className: $3};}
+	| 'STYLE' STYLE_IDS STYLE_BODY 'NEWLINE' {$$={type: 'setStyle', ids: $2, styles: $3};}
 	| autonumber NUM NUM 'NEWLINE' { $$= {type:'sequenceIndex',sequenceIndex: Number($2), sequenceIndexStep:Number($3), sequenceVisible:true, signalType:yy.LINETYPE.AUTONUMBER};}
 	| autonumber NUM 'NEWLINE' { $$ = {type:'sequenceIndex',sequenceIndex: Number($2), sequenceIndexStep:1, sequenceVisible:true, signalType:yy.LINETYPE.AUTONUMBER};}
 	| autonumber off 'NEWLINE' { $$ = {type:'sequenceIndex', sequenceVisible:false, signalType:yy.LINETYPE.AUTONUMBER};}
@@ -270,6 +292,10 @@ participant_statement
     | 'participant' actor_with_config 'NEWLINE' {$2.draw='participant'; $2.type='addParticipant'; $$=$2;}
     | 'participant_actor' actor_with_config 'AS' restOfLine 'NEWLINE' {$2.draw='actor'; $2.type='addParticipant'; $2.description=yy.parseMessage($4); $$=$2;}
     | 'participant_actor' actor_with_config 'NEWLINE' {$2.draw='actor'; $2.type='addParticipant'; $$=$2;}
+    | 'participant' actor_with_class 'AS' restOfLine 'NEWLINE' {$2.draw='participant'; $2.type='addParticipant'; $2.description=yy.parseMessage($4); $$=$2;}
+    | 'participant' actor_with_class 'NEWLINE' {$2.draw='participant'; $2.type='addParticipant'; $$=$2;}
+    | 'participant_actor' actor_with_class 'AS' restOfLine 'NEWLINE' {$2.draw='actor'; $2.type='addParticipant'; $2.description=yy.parseMessage($4); $$=$2;}
+    | 'participant_actor' actor_with_class 'NEWLINE' {$2.draw='actor'; $2.type='addParticipant'; $$=$2;}
 
 	;
 
@@ -364,6 +390,13 @@ actor_with_config
           config: $2
         };
       }
+    ;
+
+actor_with_class
+    : actor STYLE_SEPARATOR CLASSNAME
+      { $$ = $1; $$.classes = [$3]; }
+    | actor_with_config STYLE_SEPARATOR CLASSNAME
+      { $$ = $1; $$.classes = [$3]; }
     ;
 
 config_object

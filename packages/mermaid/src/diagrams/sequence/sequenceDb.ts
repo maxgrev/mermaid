@@ -13,7 +13,7 @@ import {
   setAccTitle,
   setDiagramTitle,
 } from '../common/commonDb.js';
-import type { Actor, AddMessageParams, Box, Message, Note } from './types.js';
+import type { Actor, AddMessageParams, Box, Message, Note, SequenceClass } from './types.js';
 import type { ParticipantMetaData } from '../../types.js';
 
 interface SequenceState {
@@ -22,6 +22,10 @@ interface SequenceState {
   createdActors: Map<string, number>;
   destroyedActors: Map<string, number>;
   boxes: Box[];
+  classes: Map<string, SequenceClass>;
+  // Classes and styles assigned to a participant before it is declared, applied once it is
+  pendingClasses: Map<string, string[]>;
+  pendingStyles: Map<string, string[]>;
   messages: Message[];
   notes: Note[];
   sequenceNumbersEnabled: boolean;
@@ -112,6 +116,45 @@ export const PARTICIPANT_TYPE = {
   QUEUE: 'queue',
 } as const;
 
+function splitIds(ids: string): string[] {
+  return ids
+    .split(',')
+    .map((id) => id.trim())
+    .filter((id) => id !== '');
+}
+
+/**
+ * Splits a list of style declarations such as `fill:#f9f,stroke:#333,stroke-width:4px`.
+ * Like in flowcharts the declarations are separated by commas and a comma can be escaped
+ * with a backslash. Commas inside parentheses, as in `fill:rgb(1,2,3)`, are kept as well.
+ */
+function splitStyles(styles: string): string[] {
+  const declarations: string[] = [];
+  let current = '';
+  let depth = 0;
+  for (let i = 0; i < styles.length; i++) {
+    const char = styles[i];
+    if (char === '\\' && styles[i + 1] === ',') {
+      current += ',';
+      i++;
+      continue;
+    }
+    if (char === '(') {
+      depth++;
+    } else if (char === ')') {
+      depth = Math.max(0, depth - 1);
+    }
+    if (char === ',' && depth === 0) {
+      declarations.push(current);
+      current = '';
+    } else {
+      current += char;
+    }
+  }
+  declarations.push(current);
+  return declarations.map((declaration) => declaration.trim()).filter((d) => d !== '');
+}
+
 export class SequenceDB implements DiagramDB {
   private readonly state = new ImperativeState<SequenceState>(() => ({
     prevActor: undefined,
@@ -119,6 +162,9 @@ export class SequenceDB implements DiagramDB {
     createdActors: new Map(),
     destroyedActors: new Map(),
     boxes: [],
+    classes: new Map(),
+    pendingClasses: new Map(),
+    pendingStyles: new Map(),
     messages: [],
     notes: [],
     sequenceNumbersEnabled: false,
@@ -133,6 +179,9 @@ export class SequenceDB implements DiagramDB {
     this.apply = this.apply.bind(this);
     this.parseBoxData = this.parseBoxData.bind(this);
     this.parseMessage = this.parseMessage.bind(this);
+    this.addClass = this.addClass.bind(this);
+    this.setClass = this.setClass.bind(this);
+    this.setStyle = this.setStyle.bind(this);
 
     this.clear();
 
@@ -216,6 +265,8 @@ export class SequenceDB implements DiagramDB {
       actorCnt: null,
       rectData: null,
       type: type ?? 'participant',
+      classes: [...(old?.classes ?? this.takePending(this.state.records.pendingClasses, id))],
+      styles: [...(old?.styles ?? this.takePending(this.state.records.pendingStyles, id))],
     });
     if (this.state.records.prevActor) {
       const prevActorInRecords = this.state.records.actors.get(this.state.records.prevActor);
@@ -228,6 +279,82 @@ export class SequenceDB implements DiagramDB {
       this.state.records.currentBox.actorKeys.push(id);
     }
     this.state.records.prevActor = id;
+  }
+
+  private takePending(pending: Map<string, string[]>, id: string): string[] {
+    const values = pending.get(id) ?? [];
+    pending.delete(id);
+    return values;
+  }
+
+  /**
+   * Defines the style classes named by `ids`, the same way a flowchart `classDef` does.
+   *
+   * @param ids - Comma separated list of class names
+   * @param styles - The style declarations, e.g. `fill:#f9f,stroke:#333`
+   */
+  public addClass(ids: string, styles: string) {
+    const declarations = splitStyles(styles);
+    for (const id of splitIds(ids)) {
+      let classNode = this.state.records.classes.get(id);
+      if (classNode === undefined) {
+        classNode = { id, styles: [], textStyles: [] };
+        this.state.records.classes.set(id, classNode);
+      }
+      for (const declaration of declarations) {
+        if (/color/.exec(declaration)) {
+          classNode.textStyles.push(declaration.replace('fill', 'bgFill'));
+        }
+        classNode.styles.push(declaration);
+      }
+    }
+  }
+
+  /**
+   * Assigns a style class to the participants named by `ids`.
+   *
+   * @param ids - Comma separated list of participant ids
+   * @param className - The class to assign
+   */
+  public setClass(ids: string, className: string) {
+    for (const id of splitIds(ids)) {
+      const actor = this.state.records.actors.get(id);
+      if (actor) {
+        if (!actor.classes.includes(className)) {
+          actor.classes.push(className);
+        }
+      } else {
+        const pending = this.state.records.pendingClasses.get(id) ?? [];
+        if (!pending.includes(className)) {
+          pending.push(className);
+        }
+        this.state.records.pendingClasses.set(id, pending);
+      }
+    }
+  }
+
+  /**
+   * Assigns inline styles to the participants named by `ids`.
+   *
+   * @param ids - Comma separated list of participant ids
+   * @param styles - The style declarations, e.g. `fill:#f9f,stroke:#333`
+   */
+  public setStyle(ids: string, styles: string) {
+    const declarations = splitStyles(styles);
+    for (const id of splitIds(ids)) {
+      const actor = this.state.records.actors.get(id);
+      if (actor) {
+        actor.styles.push(...declarations);
+      } else {
+        const pending = this.state.records.pendingStyles.get(id) ?? [];
+        pending.push(...declarations);
+        this.state.records.pendingStyles.set(id, pending);
+      }
+    }
+  }
+
+  public getClasses() {
+    return this.state.records.classes;
   }
 
   private activationCount(part: string) {
@@ -553,6 +680,12 @@ export class SequenceDB implements DiagramDB {
     return undefined;
   }
 
+  private applyParticipantClasses(param: { actor: string; classes?: string[] }) {
+    for (const className of param.classes ?? []) {
+      this.setClass(param.actor, className);
+    }
+  }
+
   // eslint-disable-next-line @typescript-eslint/no-explicit-any, @typescript-eslint/no-redundant-type-constituents
   public apply(param: any | AddMessageParams | AddMessageParams[]) {
     if (Array.isArray(param)) {
@@ -577,6 +710,7 @@ export class SequenceDB implements DiagramDB {
           break;
         case 'addParticipant':
           this.addActor(param.actor, param.actor, param.description, param.draw, param.config);
+          this.applyParticipantClasses(param);
           break;
         case 'createParticipant':
           if (this.state.records.actors.has(param.actor)) {
@@ -586,7 +720,17 @@ export class SequenceDB implements DiagramDB {
           }
           this.state.records.lastCreated = param.actor;
           this.addActor(param.actor, param.actor, param.description, param.draw, param.config);
+          this.applyParticipantClasses(param);
           this.state.records.createdActors.set(param.actor, this.state.records.messages.length);
+          break;
+        case 'addClass':
+          this.addClass(param.ids, param.styles);
+          break;
+        case 'setClass':
+          this.setClass(param.ids, param.className);
+          break;
+        case 'setStyle':
+          this.setStyle(param.ids, param.styles);
           break;
         case 'destroyParticipant':
           this.state.records.lastDestroyed = param.actor;

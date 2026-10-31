@@ -67,6 +67,108 @@ const COLOR_THEMES = new Set(['redux-color', 'redux-dark-color']);
  */
 export const paletteColor = (palette, index) =>
   palette?.length ? palette[index % palette.length] : undefined;
+
+/**
+ * Resolves the classes and styles a participant was given with `classDef`, `class`, `style` and
+ * the `:::` shorthand into what the drawers need.
+ *
+ * Declarations are applied in the order they were written: the `classDef` styles of each assigned
+ * class in assignment order, then the participant's own inline `style`, so an inline style
+ * overrides a class and a later class overrides an earlier one. `color` is a label property, as in
+ * flowcharts, and goes to the text; everything else styles the shape.
+ *
+ * Returns `undefined` for an unstyled participant so that every drawer can skip the work, and
+ * unstyled diagrams render exactly as they did before this existed.
+ *
+ * @param {any} actor - The actor being drawn.
+ * @param {any} diagObj - The diagram, used to look up `classDef` definitions.
+ * @returns {{ classes: string[], shapeStyles: string[][], textStyles: string[][] } | undefined}
+ */
+const resolveParticipantStyle = (actor, diagObj) => {
+  const classes = actor.classes ?? [];
+  const inlineStyles = actor.styles ?? [];
+  if (!classes.length && !inlineStyles.length) {
+    return undefined;
+  }
+  const classDefs = diagObj?.db?.getClasses?.();
+  const declarations = [];
+  for (const className of classes) {
+    declarations.push(...(classDefs?.get(className)?.styles ?? []));
+  }
+  declarations.push(...inlineStyles);
+
+  const shapeStyles = [];
+  const textStyles = [];
+  for (const declaration of declarations) {
+    const separator = declaration.indexOf(':');
+    if (separator < 1) {
+      continue;
+    }
+    const property = declaration.slice(0, separator).trim();
+    const value = declaration
+      .slice(separator + 1)
+      .replace(/!important\s*$/, '')
+      .trim();
+    if (!value) {
+      continue;
+    }
+    (property === 'color' ? textStyles : shapeStyles).push([property, value]);
+  }
+  return { classes, shapeStyles, textStyles };
+};
+
+/**
+ * Appends the participant's classes to the class list of a shape.
+ *
+ * @param {string} cssClass - The shape's existing class list.
+ * @param {ReturnType<typeof resolveParticipantStyle>} participantStyle
+ * @returns {string}
+ */
+const withParticipantClasses = (cssClass, participantStyle) =>
+  participantStyle?.classes.length ? `${cssClass} ${participantStyle.classes.join(' ')}` : cssClass;
+
+/**
+ * Applies the participant's shape styles. `!important` is used, as for flowchart classDef styles,
+ * so they win over the theme's stylesheet and the colour-theme palette set just before.
+ *
+ * @param {any} selection - The shape(s) to style.
+ * @param {ReturnType<typeof resolveParticipantStyle>} participantStyle
+ */
+const applyShapeStyles = (selection, participantStyle) => {
+  for (const [property, value] of participantStyle?.shapeStyles ?? []) {
+    selection.style(property, value, 'important');
+  }
+};
+
+/**
+ * Applies the participant's `color` to the label drawn inside `group`. The theme colours label
+ * text through `fill` on the `tspan`, so that is where the colour has to go.
+ *
+ * @param {any} group - The group the participant's label was drawn into.
+ * @param {ReturnType<typeof resolveParticipantStyle>} participantStyle
+ */
+const applyTextStyles = (group, participantStyle) => {
+  for (const [, value] of participantStyle?.textStyles ?? []) {
+    group.selectAll('text, tspan').style('fill', value, 'important');
+    group.selectAll('foreignObject div').style('color', value, 'important');
+  }
+};
+
+/**
+ * Styles a stick-figure style glyph. The theme fills the glyph's circle and lines directly, so the
+ * styles go on those as well as the group.
+ *
+ * @param {any} figure - The glyph's group.
+ * @param {ReturnType<typeof resolveParticipantStyle>} participantStyle
+ */
+const applyFigureStyles = (figure, participantStyle) => {
+  if (!participantStyle) {
+    return;
+  }
+  applyShapeStyles(figure, participantStyle);
+  applyShapeStyles(figure.selectAll('circle, line'), participantStyle);
+};
+
 export const drawRect = function (elem, rectData) {
   const rectElement = svgDrawCommon.drawRect(elem, rectData);
   // Call getConfig() here (not at module level) so multi-diagram pages get fresh config
@@ -388,7 +490,15 @@ export const fixLifeLineHeights = (diagram, actors, actorKeys, conf) => {
  * @param {any} conf - DrawText implementation discriminator object
  * @param {boolean} isFooter - If the actor is the footer one
  */
-const drawActorTypeParticipant = function (elem, actor, conf, isFooter, diagramId, actorIndexMap) {
+const drawActorTypeParticipant = function (
+  elem,
+  actor,
+  conf,
+  isFooter,
+  diagramId,
+  actorIndexMap,
+  participantStyle
+) {
   const actorY = isFooter ? actor.stopy : actor.starty;
   const center = actor.x + actor.width / 2;
   const centerY = actorY + actor.height;
@@ -443,7 +553,7 @@ const drawActorTypeParticipant = function (elem, actor, conf, isFooter, diagramI
   rect.y = actorY;
   rect.width = actor.width;
   rect.height = actor.height;
-  rect.class = cssclass;
+  rect.class = withParticipantClasses(cssclass, participantStyle);
   rect.rx = 3;
   rect.ry = 3;
   rect.name = actor.name;
@@ -459,6 +569,7 @@ const drawActorTypeParticipant = function (elem, actor, conf, isFooter, diagramI
     rectElem.style('stroke', paletteColor(borderColorArray, actorCount));
     rectElem.style('fill', paletteColor(bkgColorArray, actorCount));
   }
+  applyShapeStyles(rectElem, participantStyle);
   if (look === 'neo') {
     rectElem.attr('filter', `url(#${dropShadowId(diagramId)})`);
   }
@@ -492,6 +603,7 @@ const drawActorTypeParticipant = function (elem, actor, conf, isFooter, diagramI
     { class: `actor ${ACTOR_BOX_CLASS}` },
     conf
   );
+  applyTextStyles(g, participantStyle);
 
   let height = actor.height;
   if (rectElem.node) {
@@ -513,7 +625,15 @@ const drawActorTypeParticipant = function (elem, actor, conf, isFooter, diagramI
  * @param {any} conf - DrawText implementation discriminator object
  * @param {boolean} isFooter - If the actor is the footer one
  */
-const drawActorTypeCollections = function (elem, actor, conf, isFooter, diagramId, actorIndexMap) {
+const drawActorTypeCollections = function (
+  elem,
+  actor,
+  conf,
+  isFooter,
+  diagramId,
+  actorIndexMap,
+  participantStyle
+) {
   const actorY = isFooter ? actor.stopy : actor.starty;
   const center = actor.x + actor.width / 2;
   const centerY = actorY + actor.height;
@@ -568,7 +688,7 @@ const drawActorTypeCollections = function (elem, actor, conf, isFooter, diagramI
   rect.y = actorY;
   rect.width = actor.width;
   rect.height = actor.height;
-  rect.class = cssclass;
+  rect.class = withParticipantClasses(cssclass, participantStyle);
   rect.name = actor.name;
 
   // DRAW STACKED RECTANGLES
@@ -582,12 +702,14 @@ const drawActorTypeCollections = function (elem, actor, conf, isFooter, diagramI
     ...rect,
     x: rect.x + (isFooter ? -offset : -offset),
     y: rect.y + (isFooter ? +offset : +offset),
-    class: 'actor',
+    class: withParticipantClasses('actor', participantStyle),
   };
   const rectElem = drawRect(g, rect); // draw main rectangle on top
   const stackedRect = drawRect(g, shadowRect);
   actor.rectData = rect;
 
+  applyShapeStyles(rectElem, participantStyle);
+  applyShapeStyles(stackedRect, participantStyle);
   if (look === 'neo') {
     g.attr('filter', `url(#${dropShadowId(diagramId)})`);
   }
@@ -619,6 +741,7 @@ const drawActorTypeCollections = function (elem, actor, conf, isFooter, diagramI
     { class: `actor ${ACTOR_BOX_CLASS}` },
     conf
   );
+  applyTextStyles(g, participantStyle);
 
   let height = actor.height;
   if (rectElem.node) {
@@ -638,7 +761,15 @@ const drawActorTypeCollections = function (elem, actor, conf, isFooter, diagramI
   return height;
 };
 
-const drawActorTypeQueue = function (elem, actor, conf, isFooter, diagramId, actorIndexMap) {
+const drawActorTypeQueue = function (
+  elem,
+  actor,
+  conf,
+  isFooter,
+  diagramId,
+  actorIndexMap,
+  participantStyle
+) {
   const actorY = isFooter ? actor.stopy : actor.starty;
   const center = actor.x + actor.width / 2;
   const centerY = actorY + actor.height;
@@ -690,7 +821,7 @@ const drawActorTypeQueue = function (elem, actor, conf, isFooter, diagramId, act
   } else {
     cssclass += ` ${TOP_ACTOR_CLASS}`;
   }
-  g.attr('class', cssclass);
+  g.attr('class', withParticipantClasses(cssclass, participantStyle));
 
   rect.x = actor.x;
   rect.y = actorY;
@@ -725,6 +856,8 @@ const drawActorTypeQueue = function (elem, actor, conf, isFooter, diagramId, act
 
   actor.rectData = rect;
 
+  applyShapeStyles(cylinderGroup, participantStyle);
+  applyShapeStyles(cylinderArc, participantStyle);
   if (look === 'neo') {
     cylinderGroup.attr('filter', `url(#${dropShadowId(diagramId)})`);
   }
@@ -758,6 +891,7 @@ const drawActorTypeQueue = function (elem, actor, conf, isFooter, diagramId, act
     { class: `actor ${ACTOR_BOX_CLASS}` },
     conf
   );
+  applyTextStyles(g, participantStyle);
 
   let height = actor.height;
   const lastPath = cylinderGroup.select('path:last-child');
@@ -778,7 +912,15 @@ const drawActorTypeQueue = function (elem, actor, conf, isFooter, diagramId, act
   return height;
 };
 
-const drawActorTypeControl = function (elem, actor, conf, isFooter, diagramId, actorIndexMap) {
+const drawActorTypeControl = function (
+  elem,
+  actor,
+  conf,
+  isFooter,
+  diagramId,
+  actorIndexMap,
+  participantStyle
+) {
   const actorY = isFooter ? actor.stopy : actor.starty;
   const center = actor.x + actor.width / 2;
   const bands = neoBands(actor, conf, isFooter, actorY);
@@ -813,7 +955,7 @@ const drawActorTypeControl = function (elem, actor, conf, isFooter, diagramId, a
   } else {
     cssClass += ` ${TOP_ACTOR_CLASS}`;
   }
-  actElem.attr('class', cssClass);
+  actElem.attr('class', withParticipantClasses(cssClass, participantStyle));
   actElem.attr('name', actor.name);
 
   const rect = svgDrawCommon.getNoteRect();
@@ -863,6 +1005,7 @@ const drawActorTypeControl = function (elem, actor, conf, isFooter, diagramId, a
     actElem.style('stroke', actorBorder);
     actElem.style('fill', actorBkg);
   }
+  applyFigureStyles(actElem, participantStyle);
   if (!bands) {
     const bounds = actElem.node().getBBox();
     actor.height = bounds.height + 2 * (conf?.sequence?.labelBoxHeight ?? 0);
@@ -878,6 +1021,7 @@ const drawActorTypeControl = function (elem, actor, conf, isFooter, diagramId, a
     { class: `actor ${ACTOR_MAN_FIGURE_CLASS}` },
     conf
   );
+  applyTextStyles(actElem, participantStyle);
 
   if (!isFooter) {
     actElem.attr('data-et', 'participant');
@@ -888,7 +1032,15 @@ const drawActorTypeControl = function (elem, actor, conf, isFooter, diagramId, a
   return actor.height;
 };
 
-const drawActorTypeEntity = function (elem, actor, conf, isFooter, diagramId, actorIndexMap) {
+const drawActorTypeEntity = function (
+  elem,
+  actor,
+  conf,
+  isFooter,
+  diagramId,
+  actorIndexMap,
+  participantStyle
+) {
   const actorY = isFooter ? actor.stopy : actor.starty;
   const center = actor.x + actor.width / 2;
   const bands = neoBands(actor, conf, isFooter, actorY);
@@ -905,7 +1057,7 @@ const drawActorTypeEntity = function (elem, actor, conf, isFooter, diagramId, ac
   } else {
     cssClass += ` ${TOP_ACTOR_CLASS}`;
   }
-  actElem.attr('class', cssClass);
+  actElem.attr('class', withParticipantClasses(cssClass, participantStyle));
   actElem.attr('name', actor.name);
 
   const rect = svgDrawCommon.getNoteRect();
@@ -945,6 +1097,7 @@ const drawActorTypeEntity = function (elem, actor, conf, isFooter, diagramId, ac
     actElem.style('stroke', paletteColor(borderColorArray, actorCount));
     actElem.style('fill', paletteColor(bkgColorArray, actorCount));
   }
+  applyFigureStyles(actElem, participantStyle);
 
   if (!bands) {
     const bounds = actElem.node().getBBox();
@@ -980,6 +1133,7 @@ const drawActorTypeEntity = function (elem, actor, conf, isFooter, diagramId, ac
     { class: `actor ${ACTOR_MAN_FIGURE_CLASS}` },
     conf
   );
+  applyTextStyles(actElem, participantStyle);
 
   if (!bands) {
     // Legacy nudges. Under the band model the circle is placed exactly, so any leftover translate
@@ -996,7 +1150,15 @@ const drawActorTypeEntity = function (elem, actor, conf, isFooter, diagramId, ac
   return actor.height;
 };
 
-const drawActorTypeDatabase = function (elem, actor, conf, isFooter, diagramId, actorIndexMap) {
+const drawActorTypeDatabase = function (
+  elem,
+  actor,
+  conf,
+  isFooter,
+  diagramId,
+  actorIndexMap,
+  participantStyle
+) {
   const actorY = isFooter ? actor.stopy : actor.starty;
   const center = actor.x + actor.width / 2;
   const bands = neoBands(actor, conf, isFooter, actorY);
@@ -1073,7 +1235,7 @@ const drawActorTypeDatabase = function (elem, actor, conf, isFooter, diagramId, 
 
   // Cylinder base group
   const cylinderGroup = g.append('g');
-  cylinderGroup.attr('class', cssclass);
+  cylinderGroup.attr('class', withParticipantClasses(cssclass, participantStyle));
 
   const d = `
   M ${rect.x},${cylinderY + ry}
@@ -1096,6 +1258,8 @@ const drawActorTypeDatabase = function (elem, actor, conf, isFooter, diagramId, 
     cylinderGroup.style('stroke', actorBorder);
   }
 
+  applyShapeStyles(cylinderGroup, participantStyle);
+
   // Both branches were identical — simplified to a single unconditional statement
   cylinderGroup.attr('transform', `translate(${w}, ${ry})`);
   actor.rectData = rect;
@@ -1109,6 +1273,7 @@ const drawActorTypeDatabase = function (elem, actor, conf, isFooter, diagramId, 
     { class: `actor ${ACTOR_BOX_CLASS}` },
     conf
   );
+  applyTextStyles(g, participantStyle);
 
   if (!bands) {
     const lastPath = cylinderGroup.select('path:last-child');
@@ -1127,7 +1292,15 @@ const drawActorTypeDatabase = function (elem, actor, conf, isFooter, diagramId, 
   return actor.height;
 };
 
-const drawActorTypeBoundary = function (elem, actor, conf, isFooter, diagramId, actorIndexMap) {
+const drawActorTypeBoundary = function (
+  elem,
+  actor,
+  conf,
+  isFooter,
+  diagramId,
+  actorIndexMap,
+  participantStyle
+) {
   const actorY = isFooter ? actor.stopy : actor.starty;
   const center = actor.x + actor.width / 2;
   const bands = neoBands(actor, conf, isFooter, actorY);
@@ -1163,7 +1336,7 @@ const drawActorTypeBoundary = function (elem, actor, conf, isFooter, diagramId, 
   } else {
     cssClass += ` ${TOP_ACTOR_CLASS}`;
   }
-  actElem.attr('class', cssClass);
+  actElem.attr('class', withParticipantClasses(cssClass, participantStyle));
   actElem.attr('name', actor.name);
 
   const rect = svgDrawCommon.getNoteRect();
@@ -1207,6 +1380,7 @@ const drawActorTypeBoundary = function (elem, actor, conf, isFooter, diagramId, 
   } else {
     actElem.style('stroke', actorBorder);
   }
+  applyFigureStyles(actElem, participantStyle);
   if (!bands) {
     const bounds = actElem.node().getBBox();
     actor.height = bounds.height + (conf.sequence.labelBoxHeight ?? 0);
@@ -1222,6 +1396,7 @@ const drawActorTypeBoundary = function (elem, actor, conf, isFooter, diagramId, 
     { class: `actor ${ACTOR_MAN_FIGURE_CLASS}` },
     conf
   );
+  applyTextStyles(actElem, participantStyle);
 
   if (!bands) {
     // Legacy nudge; see the note in drawActorTypeEntity.
@@ -1237,7 +1412,7 @@ const drawActorTypeBoundary = function (elem, actor, conf, isFooter, diagramId, 
   return actor.height;
 };
 
-const drawActorTypeActor = function (elem, actor, conf, isFooter, actorIndexMap) {
+const drawActorTypeActor = function (elem, actor, conf, isFooter, actorIndexMap, participantStyle) {
   const actorY = isFooter ? actor.stopy : actor.starty;
   const center = actor.x + actor.width / 2;
   const bands = neoBands(actor, conf, isFooter, actorY);
@@ -1272,7 +1447,7 @@ const drawActorTypeActor = function (elem, actor, conf, isFooter, actorIndexMap)
   } else {
     cssClass += ` ${TOP_ACTOR_CLASS}`;
   }
-  actElem.attr('class', cssClass);
+  actElem.attr('class', withParticipantClasses(cssClass, participantStyle));
   actElem.attr('name', actor.name);
 
   if (!isFooter) {
@@ -1343,6 +1518,7 @@ const drawActorTypeActor = function (elem, actor, conf, isFooter, actorIndexMap)
   } else {
     actElem.style('stroke', actorBorder);
   }
+  applyFigureStyles(actElem, participantStyle);
 
   _drawTextCandidateFunc(conf, hasKatex(actor.description))(
     actor.description,
@@ -1354,6 +1530,7 @@ const drawActorTypeActor = function (elem, actor, conf, isFooter, actorIndexMap)
     { class: `actor ${ACTOR_MAN_FIGURE_CLASS}` },
     conf
   );
+  applyTextStyles(actElem, participantStyle);
 
   return actor.height;
 };
@@ -1373,9 +1550,18 @@ export const drawActor = async function (
       [...diagObj.db.getActors().values()].map((participant, index) => [participant.name, index])
     );
 
+  const participantStyle = resolveParticipantStyle(actor, diagObj);
+
   switch (actor.type) {
     case 'actor':
-      return await drawActorTypeActor(elem, actor, conf, isFooter, resolvedActorIndexMap);
+      return await drawActorTypeActor(
+        elem,
+        actor,
+        conf,
+        isFooter,
+        resolvedActorIndexMap,
+        participantStyle
+      );
     case 'participant':
       return await drawActorTypeParticipant(
         elem,
@@ -1383,7 +1569,8 @@ export const drawActor = async function (
         conf,
         isFooter,
         diagramId,
-        resolvedActorIndexMap
+        resolvedActorIndexMap,
+        participantStyle
       );
     case 'boundary':
       return await drawActorTypeBoundary(
@@ -1392,7 +1579,8 @@ export const drawActor = async function (
         conf,
         isFooter,
         diagramId,
-        resolvedActorIndexMap
+        resolvedActorIndexMap,
+        participantStyle
       );
     case 'control':
       return await drawActorTypeControl(
@@ -1401,7 +1589,8 @@ export const drawActor = async function (
         conf,
         isFooter,
         diagramId,
-        resolvedActorIndexMap
+        resolvedActorIndexMap,
+        participantStyle
       );
     case 'entity':
       return await drawActorTypeEntity(
@@ -1410,7 +1599,8 @@ export const drawActor = async function (
         conf,
         isFooter,
         diagramId,
-        resolvedActorIndexMap
+        resolvedActorIndexMap,
+        participantStyle
       );
     case 'database':
       return await drawActorTypeDatabase(
@@ -1419,7 +1609,8 @@ export const drawActor = async function (
         conf,
         isFooter,
         diagramId,
-        resolvedActorIndexMap
+        resolvedActorIndexMap,
+        participantStyle
       );
     case 'collections':
       return await drawActorTypeCollections(
@@ -1428,7 +1619,8 @@ export const drawActor = async function (
         conf,
         isFooter,
         diagramId,
-        resolvedActorIndexMap
+        resolvedActorIndexMap,
+        participantStyle
       );
     case 'queue':
       return await drawActorTypeQueue(
@@ -1437,7 +1629,8 @@ export const drawActor = async function (
         conf,
         isFooter,
         diagramId,
-        resolvedActorIndexMap
+        resolvedActorIndexMap,
+        participantStyle
       );
   }
 };
